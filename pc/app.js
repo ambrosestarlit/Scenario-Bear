@@ -6,6 +6,74 @@ const app = {
     characters: [],
     autoSaveInterval: null,
 
+    // 文字数カウントから除外する行頭記号
+    // 例: // ト書き / 〇 現在地 / 【暗転】 / (補足)
+    // 空白行、台詞行の名前＋：、台詞本文中の括弧・引用符も文字数カウントから除外
+    excludedLinePrefixes: ['//', '〇', '○', '【', '(', '（'],
+
+    normalizeLineForCharCount(line) {
+        return (line || '').replace(/^\s*\d{3}\s+/, '').trimStart();
+    },
+
+    isExcludedFromCharCount(line) {
+        const normalized = this.normalizeLineForCharCount(line);
+        if (normalized.trim() === '') return true;
+        return this.excludedLinePrefixes.some(prefix => normalized.startsWith(prefix));
+    },
+
+    stripSpeakerNameForCharCount(line) {
+        const normalized = this.normalizeLineForCharCount(line);
+        const match = normalized.match(/^([^：:\r\n]{1,80})[：:](.*)$/);
+
+        if (!match) return normalized;
+
+        const speakerName = match[1].trim();
+        if (!speakerName) return normalized;
+
+        return match[2].trimStart();
+    },
+
+    normalizeDialogueBodyForCharCount(text) {
+        let result = (text || '').trim();
+
+        // 台詞本文を囲む括弧・引用符は文字数に含めない
+        // 例: あいす：(ああああ) → ああああ のみカウント
+        //     あいす：「ああああ」 → ああああ のみカウント
+        result = result.replace(/[()（）「」『』]/g, '');
+
+        return result.trim();
+    },
+
+    getCountableLineText(line) {
+        if (this.isExcludedFromCharCount(line)) return '';
+
+        const withoutSpeaker = this.stripSpeakerNameForCharCount(line);
+        return this.normalizeDialogueBodyForCharCount(withoutSpeaker);
+    },
+
+    countCountableCharacters(text) {
+        if (!text) return 0;
+        return text
+            .split(/\r?\n/)
+            .reduce((sum, line) => sum + this.getCountableLineText(line).length, 0);
+    },
+
+    countCutCharacters(cut) {
+        return this.countCountableCharacters(cut && cut.content ? cut.content : '');
+    },
+
+    getTotalCountableCharacters() {
+        return this.cuts.reduce((sum, cut, index) => {
+            if (index === this.currentCut) {
+                const editor = document.getElementById('contentEditor');
+                if (editor) {
+                    return sum + this.countCountableCharacters(editor.value);
+                }
+            }
+            return sum + this.countCutCharacters(cut);
+        }, 0);
+    },
+
     init() {
         // シーン数ドロップダウンを1～300で初期化
         const sectionCountSelect = document.getElementById('sectionCount');
@@ -86,7 +154,7 @@ const app = {
         if (!data) return 0;
         
         const project = JSON.parse(data);
-        return project.cuts.reduce((sum, cut) => sum + (cut.content ? cut.content.length : 0), 0);
+        return project.cuts.reduce((sum, cut) => sum + this.countCutCharacters(cut), 0);
     },
 
     closeWelcome() {
@@ -385,18 +453,7 @@ const app = {
             }
             
             // 文字数更新（現在編集中の内容も含める）
-            let totalChars = 0;
-            this.cuts.forEach((cut, index) => {
-                if (index === this.currentCut) {
-                    // 現在編集中のシーンは、エディターの内容を使用
-                    const editor = document.getElementById('contentEditor');
-                    const editorChars = editor ? editor.value.length : 0;
-                    totalChars += editorChars;
-                } else {
-                    const cutChars = cut.content ? cut.content.length : 0;
-                    totalChars += cutChars;
-                }
-            });
+            const totalChars = this.getTotalCountableCharacters();
             
             const minutes = Math.floor(totalChars / 240);
             
@@ -500,7 +557,7 @@ const app = {
                 item.classList.add('active');
             }
             
-            const chars = cut.content ? cut.content.length : 0;
+            const chars = this.countCutCharacters(cut);
             const minutes = Math.floor(chars / 240);
             item.textContent = `${cut.name} (${chars}文字/${minutes}分)`;
             item.onclick = () => this.loadCut(index);
@@ -509,7 +566,7 @@ const app = {
         });
         
         // 現在のシーン情報更新
-        const currentChars = this.cuts[this.currentCut] ? this.cuts[this.currentCut].content.length : 0;
+        const currentChars = this.cuts[this.currentCut] ? this.countCutCharacters(this.cuts[this.currentCut]) : 0;
         const currentMinutes = Math.floor(currentChars / 240);
         document.getElementById('currentCutLabel').textContent = this.cuts[this.currentCut].name;
         document.getElementById('currentCutStats').textContent = `${currentChars}文字 (${currentMinutes}分)`;
@@ -576,13 +633,13 @@ const app = {
         }
         
         const content = contentEditor.value;
-        editorCharCount.textContent = content.length;
+        editorCharCount.textContent = this.countCountableCharacters(content);
         
         // 現在のシーンの内容を最新の状態で保存してから集計
         this.saveCutContent();
         
         // 全体の文字数と分数をリアルタイム更新
-        const totalChars = this.cuts.reduce((sum, cut) => sum + (cut.content ? cut.content.length : 0), 0);
+        const totalChars = this.getTotalCountableCharacters();
         const totalCharCountClock = document.getElementById('totalCharCountClock');
         const totalCharCount = document.getElementById('totalCharCount');
         const estimatedDuration = document.getElementById('estimatedDuration');
@@ -655,7 +712,7 @@ const app = {
         }
         
         // 特殊文字ボタンを追加
-        const specialChars = ['…', 'っ', 'ッ', '♡', '〜', 'ー'];
+        const specialChars = ['…', 'っ', 'ッ', '゛', '♡', '〜', 'ー', '！', '？', '！？'];
         specialChars.forEach(char => {
             const btn = document.createElement('button');
             btn.className = 'char-button';
@@ -670,8 +727,8 @@ const app = {
         spacer2.style.width = '12px';
         panel.appendChild(spacer2);
         
-        // 【シーンA】〜【シーンD】ボタンを追加
-        const cutLabels = ['【シーンA】', '【シーンB】', '【シーンC】', '【シーンD】'];
+        // ト書き関係〜【暗転】ボタンを追加
+        const cutLabels = [ '// ', '〇 ', '// SE -  ', '// 環境音 - ','// BGM - ','// 挿入歌 - ', '【暗転】', '(10秒程  ループ使用意識で)'];
         cutLabels.forEach(label => {
             const btn = document.createElement('button');
             btn.className = 'char-button';
@@ -844,7 +901,7 @@ const app = {
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.6);
+            background: var(--sw-overlay-dark);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -853,7 +910,7 @@ const app = {
 
         const window = document.createElement('div');
         window.style.cssText = `
-            background: #e7d0a9;
+            background: var(--sw-bg);
             border-radius: 20px;
             width: 90%;
             max-width: 700px;
@@ -861,7 +918,7 @@ const app = {
             overflow: hidden;
             display: flex;
             flex-direction: column;
-            box-shadow: 0 10px 60px rgba(0,0,0,0.4);
+            box-shadow: 0 10px 60px var(--sw-shadow-dark);
         `;
 
         window.innerHTML = `
@@ -872,7 +929,7 @@ const app = {
                 .moan-label {
                     font-size: 13px;
                     font-weight: bold;
-                    color: #7c5b53;
+                    color: var(--sw-primary);
                     margin-bottom: 8px;
                     display: block;
                 }
@@ -891,7 +948,7 @@ const app = {
                     margin: 10px 0;
                 }
                 .moan-result {
-                    background: #f9f9f9;
+                    background: var(--sw-surface-muted);
                     padding: 15px;
                     border-radius: 8px;
                     min-height: 100px;
@@ -903,8 +960,8 @@ const app = {
                 }
                 .moan-btn {
                     padding: 10px 20px;
-                    background: #c85a8b;
-                    color: white;
+                    background: var(--sw-pink);
+                    color: var(--sw-text-inverse);
                     border: none;
                     border-radius: 10px;
                     cursor: pointer;
@@ -913,16 +970,16 @@ const app = {
                     margin-right: 8px;
                 }
                 .moan-btn:hover {
-                    background: #b74a7a;
+                    background: var(--sw-pink-hover);
                 }
             </style>
 
-            <div style="background: linear-gradient(to right, #c85a8b, #d87aa0); color: white; padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
+            <div style="background: linear-gradient(to right, var(--sw-pink), var(--sw-pink-light)); color: var(--sw-text-inverse); padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
                 <div style="font-size: 20px; font-weight: bold;">💕 喘ぎ声生成</div>
-                <button onclick="this.closest('.moan-generator-modal').remove()" style="background: none; border: none; color: white; font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
+                <button onclick="this.closest('.moan-generator-modal').remove()" style="background: none; border: none; color: var(--sw-text-inverse); font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
             </div>
 
-            <div style="padding: 25px; background: white; overflow-y: auto; max-height: calc(85vh - 100px);">
+            <div style="padding: 25px; background: var(--sw-surface); overflow-y: auto; max-height: calc(85vh - 100px);">
                 <div class="moan-control-group">
                     <div class="moan-label">喘ぎ声タイプ</div>
                     <div class="moan-radio-group">
@@ -959,7 +1016,7 @@ const app = {
 
                 <div style="margin: 20px 0;">
                     <button class="moan-btn" onclick="app.generateMoan()">生成</button>
-                    <button class="moan-btn" style="background: #7c5b53;" onclick="app.insertGeneratedMoan()">挿入</button>
+                    <button class="moan-btn" style="background: var(--sw-primary);" onclick="app.insertGeneratedMoan()">挿入</button>
                 </div>
 
                 <div class="moan-control-group">
@@ -1064,7 +1121,7 @@ const app = {
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.6);
+            background: var(--sw-overlay-dark);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1073,7 +1130,7 @@ const app = {
 
         const window = document.createElement('div');
         window.style.cssText = `
-            background: #e7d0a9;
+            background: var(--sw-bg);
             border-radius: 20px;
             width: 90%;
             max-width: 600px;
@@ -1081,7 +1138,7 @@ const app = {
             overflow: hidden;
             display: flex;
             flex-direction: column;
-            box-shadow: 0 10px 60px rgba(0,0,0,0.4);
+            box-shadow: 0 10px 60px var(--sw-shadow-dark);
         `;
 
         const soundButtons = [
@@ -1119,11 +1176,11 @@ const app = {
         soundButtons.forEach(category => {
             buttonsHtml += `
                 <div style="margin-bottom: 15px;">
-                    <div style="font-size: 13px; font-weight: bold; color: #7c5b53; margin-bottom: 8px;">【${category.category}】</div>
+                    <div style="font-size: 13px; font-weight: bold; color: var(--sw-primary); margin-bottom: 8px;">【${category.category}】</div>
                     <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px;">
                         ${category.sounds.map(sound => `
                             <button onclick="app.insertAdultSound('${sound.label}')" 
-                                    style="padding: 10px; background: #c85a8b; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: bold;">
+                                    style="padding: 10px; background: var(--sw-pink); color: var(--sw-text-inverse); border: none; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: bold;">
                                 ${sound.label}
                             </button>
                         `).join('')}
@@ -1133,11 +1190,11 @@ const app = {
         });
 
         window.innerHTML = `
-            <div style="background: linear-gradient(to right, #c85a8b, #d87aa0); color: white; padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
+            <div style="background: linear-gradient(to right, var(--sw-pink), var(--sw-pink-light)); color: var(--sw-text-inverse); padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
                 <div style="font-size: 20px; font-weight: bold;">🔞 アダルト効果音</div>
-                <button onclick="this.closest('.adult-sound-modal').remove()" style="background: none; border: none; color: white; font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
+                <button onclick="this.closest('.adult-sound-modal').remove()" style="background: none; border: none; color: var(--sw-text-inverse); font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
             </div>
-            <div style="padding: 25px; background: white; overflow-y: auto; max-height: calc(85vh - 100px);">
+            <div style="padding: 25px; background: var(--sw-surface); overflow-y: auto; max-height: calc(85vh - 100px);">
                 ${buttonsHtml}
             </div>
         `;
@@ -1173,7 +1230,7 @@ const app = {
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.6);
+            background: var(--sw-overlay-dark);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1182,7 +1239,7 @@ const app = {
 
         const window = document.createElement('div');
         window.style.cssText = `
-            background: #e7d0a9;
+            background: var(--sw-bg);
             border-radius: 20px;
             width: 95%;
             max-width: 800px;
@@ -1190,7 +1247,7 @@ const app = {
             overflow: hidden;
             display: flex;
             flex-direction: column;
-            box-shadow: 0 10px 60px rgba(0,0,0,0.4);
+            box-shadow: 0 10px 60px var(--sw-shadow-dark);
         `;
 
         const slotData = {
@@ -1215,14 +1272,14 @@ const app = {
                     gap: 15px;
                 }
                 .slot-item {
-                    background: white;
+                    background: var(--sw-surface);
                     padding: 12px;
                     border-radius: 10px;
                 }
                 .slot-label {
                     font-size: 13px;
                     font-weight: bold;
-                    color: #7c5b53;
+                    color: var(--sw-primary);
                     margin-bottom: 8px;
                 }
                 .slot-controls {
@@ -1233,8 +1290,8 @@ const app = {
                 .slot-result {
                     flex: 1;
                     padding: 8px;
-                    background: #f9f9f9;
-                    border: 1px solid #c4a88b;
+                    background: var(--sw-surface-muted);
+                    border: 1px solid var(--sw-menu-end);
                     border-radius: 6px;
                     font-size: 14px;
                     text-align: center;
@@ -1245,8 +1302,8 @@ const app = {
                 }
                 .slot-btn {
                     padding: 8px 12px;
-                    background: #a87b5a;
-                    color: white;
+                    background: var(--sw-beige);
+                    color: var(--sw-text-inverse);
                     border: none;
                     border-radius: 6px;
                     cursor: pointer;
@@ -1254,12 +1311,12 @@ const app = {
                     font-size: 16px;
                 }
                 .slot-btn:hover {
-                    background: #96694d;
+                    background: var(--sw-primary-warm);
                 }
                 .slot-action-btn {
                     padding: 10px 20px;
-                    background: #7c5b53;
-                    color: white;
+                    background: var(--sw-primary);
+                    color: var(--sw-text-inverse);
                     border: none;
                     border-radius: 10px;
                     cursor: pointer;
@@ -1268,7 +1325,7 @@ const app = {
                     margin-right: 8px;
                 }
                 .slot-action-btn:hover {
-                    background: #6a4d45;
+                    background: var(--sw-primary-deep);
                 }
                 .slot-rating {
                     display: flex;
@@ -1283,12 +1340,12 @@ const app = {
                 }
             </style>
 
-            <div style="background: linear-gradient(to right, #a87b5a, #c4a88b); color: white; padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
+            <div style="background: linear-gradient(to right, var(--sw-beige), var(--sw-menu-end)); color: var(--sw-text-inverse); padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
                 <div style="font-size: 20px; font-weight: bold;">🎰 創作支援スロット</div>
-                <button onclick="this.closest('.slot-modal').remove()" style="background: none; border: none; color: white; font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
+                <button onclick="this.closest('.slot-modal').remove()" style="background: none; border: none; color: var(--sw-text-inverse); font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
             </div>
 
-            <div style="padding: 25px; background: white; overflow-y: auto; max-height: calc(90vh - 150px);">
+            <div style="padding: 25px; background: var(--sw-surface); overflow-y: auto; max-height: calc(90vh - 150px);">
                 <div class="slot-rating">
                     <label><input type="radio" name="slotRating" value="general" checked onchange="app.toggleSlotRating()"> 全年齢向け</label>
                     <label><input type="radio" name="slotRating" value="adult" onchange="app.toggleSlotRating()"> 成人向け</label>
@@ -1390,7 +1447,7 @@ const app = {
                 <div style="margin-top: 20px; display: flex; gap: 10px;">
                     <button class="slot-action-btn" onclick="app.spinAllSlots()">全て回す</button>
                     <button class="slot-action-btn" onclick="app.clearAllSlots()">クリア</button>
-                    <button class="slot-action-btn" style="background: #6b8b5a;" onclick="app.insertSlotToMemo()">メモに挿入</button>
+                    <button class="slot-action-btn" style="background: var(--sw-green);" onclick="app.insertSlotToMemo()">メモに挿入</button>
                 </div>
             </div>
         `;
@@ -1527,7 +1584,7 @@ const app = {
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.6);
+            background: var(--sw-overlay-dark);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1536,14 +1593,14 @@ const app = {
 
         const window = document.createElement('div');
         window.style.cssText = `
-            background: #e7d0a9;
+            background: var(--sw-bg);
             border-radius: 20px;
             width: 90%;
             max-width: 600px;
             overflow: hidden;
             display: flex;
             flex-direction: column;
-            box-shadow: 0 10px 60px rgba(0,0,0,0.4);
+            box-shadow: 0 10px 60px var(--sw-shadow-dark);
         `;
 
         window.innerHTML = `
@@ -1554,14 +1611,14 @@ const app = {
                 .replace-label {
                     font-size: 13px;
                     font-weight: bold;
-                    color: #7c5b53;
+                    color: var(--sw-primary);
                     margin-bottom: 5px;
                 }
                 .replace-textarea {
                     width: 100%;
                     height: 120px;
                     padding: 8px;
-                    border: 1px solid #c4a88b;
+                    border: 1px solid var(--sw-menu-end);
                     border-radius: 8px;
                     font-family: 'MS Gothic', monospace;
                     font-size: 13px;
@@ -1575,15 +1632,15 @@ const app = {
                 .replace-result {
                     margin-top: 10px;
                     padding: 10px;
-                    background: white;
+                    background: var(--sw-surface);
                     border-radius: 8px;
                     font-size: 12px;
                     min-height: 40px;
                 }
                 .replace-btn {
                     padding: 10px 20px;
-                    background: #7c5b53;
-                    color: white;
+                    background: var(--sw-primary);
+                    color: var(--sw-text-inverse);
                     border: none;
                     border-radius: 10px;
                     cursor: pointer;
@@ -1592,24 +1649,24 @@ const app = {
                     margin-right: 8px;
                 }
                 .replace-btn:hover {
-                    background: #6a4d45;
+                    background: var(--sw-primary-deep);
                 }
                 .replace-help {
                     font-size: 11px;
-                    color: #666;
+                    color: var(--sw-text-sub);
                     margin-top: 5px;
                     line-height: 1.4;
                 }
             </style>
 
             <!-- ヘッダー -->
-            <div style="background: linear-gradient(to right, #7c5b53, #a0795f); color: white; padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
+            <div style="background: linear-gradient(to right, var(--sw-primary), var(--sw-primary-accent)); color: var(--sw-text-inverse); padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
                 <div style="font-size: 20px; font-weight: bold;">🔄 文字置換</div>
-                <button onclick="this.closest('.replace-modal').remove()" style="background: none; border: none; color: white; font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
+                <button onclick="this.closest('.replace-modal').remove()" style="background: none; border: none; color: var(--sw-text-inverse); font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
             </div>
 
             <!-- コンテンツ -->
-            <div style="padding: 25px; background: white;">
+            <div style="padding: 25px; background: var(--sw-surface);">
                 <div class="replace-input-group">
                     <div class="replace-label">置換前の文字列（1行に1つ）:</div>
                     <textarea id="replaceFromText" class="replace-textarea" placeholder="例：\n太郎\n花子\n次郎"></textarea>
@@ -1631,7 +1688,7 @@ const app = {
 
                 <div style="margin-top: 20px;">
                     <button class="replace-btn" onclick="app.executeReplace()">置換実行</button>
-                    <button class="replace-btn" style="background: #999;" onclick="this.closest('.replace-modal').remove()">キャンセル</button>
+                    <button class="replace-btn" style="background: var(--sw-text-muted);" onclick="this.closest('.replace-modal').remove()">キャンセル</button>
                 </div>
             </div>
         `;
@@ -1811,7 +1868,7 @@ const app = {
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.6);
+            background: var(--sw-overlay-dark);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1820,12 +1877,12 @@ const app = {
 
         const window = document.createElement('div');
         window.style.cssText = `
-            background: #e7d0a9;
+            background: var(--sw-bg);
             border-radius: 20px;
             width: 90%;
             max-width: 400px;
             overflow: hidden;
-            box-shadow: 0 10px 60px rgba(0,0,0,0.4);
+            box-shadow: 0 10px 60px var(--sw-shadow-dark);
         `;
 
         // 現在の日付または既存の日付を取得
@@ -1844,8 +1901,8 @@ const app = {
         window.innerHTML = `
             <style>
                 .calendar-header {
-                    background: linear-gradient(to right, #7c5b53, #a0795f);
-                    color: white;
+                    background: linear-gradient(to right, var(--sw-primary), var(--sw-primary-accent));
+                    color: var(--sw-text-inverse);
                     padding: 18px 25px;
                     display: flex;
                     justify-content: space-between;
@@ -1856,11 +1913,11 @@ const app = {
                     justify-content: space-between;
                     align-items: center;
                     padding: 15px 20px;
-                    background: white;
+                    background: var(--sw-surface);
                 }
                 .calendar-nav-btn {
-                    background: #7c5b53;
-                    color: white;
+                    background: var(--sw-primary);
+                    color: var(--sw-text-inverse);
                     border: none;
                     padding: 8px 15px;
                     border-radius: 8px;
@@ -1868,24 +1925,24 @@ const app = {
                     font-weight: bold;
                 }
                 .calendar-nav-btn:hover {
-                    background: #6a4d45;
+                    background: var(--sw-primary-deep);
                 }
                 .calendar-month-year {
                     font-size: 18px;
                     font-weight: bold;
-                    color: #7c5b53;
+                    color: var(--sw-primary);
                 }
                 .calendar-grid {
                     display: grid;
                     grid-template-columns: repeat(7, 1fr);
                     gap: 5px;
                     padding: 15px 20px 20px 20px;
-                    background: white;
+                    background: var(--sw-surface);
                 }
                 .calendar-day-header {
                     text-align: center;
                     font-weight: bold;
-                    color: #7c5b53;
+                    color: var(--sw-primary);
                     padding: 8px;
                     font-size: 12px;
                 }
@@ -1900,25 +1957,25 @@ const app = {
                     transition: all 0.2s;
                 }
                 .calendar-day:hover {
-                    background: #e7d0a9;
+                    background: var(--sw-bg);
                 }
                 .calendar-day.other-month {
-                    color: #ccc;
+                    color: var(--sw-border-gray);
                 }
                 .calendar-day.today {
-                    background: #d4b89b;
+                    background: var(--sw-menu-start);
                     font-weight: bold;
                 }
                 .calendar-day.selected {
-                    background: #7c5b53;
-                    color: white;
+                    background: var(--sw-primary);
+                    color: var(--sw-text-inverse);
                     font-weight: bold;
                 }
             </style>
 
             <div class="calendar-header">
                 <div style="font-size: 20px; font-weight: bold;">📅 執筆期日を選択</div>
-                <button onclick="this.closest('.calendar-modal').remove()" style="background: none; border: none; color: white; font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
+                <button onclick="this.closest('.calendar-modal').remove()" style="background: none; border: none; color: var(--sw-text-inverse); font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
             </div>
 
             <div class="calendar-nav">
@@ -2063,7 +2120,7 @@ const app = {
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.6);
+            background: var(--sw-overlay-dark);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -2072,7 +2129,7 @@ const app = {
 
         const window = document.createElement('div');
         window.style.cssText = `
-            background: #e7d0a9;
+            background: var(--sw-bg);
             border-radius: 20px;
             width: 95%;
             max-width: 1100px;
@@ -2080,7 +2137,7 @@ const app = {
             overflow: hidden;
             display: flex;
             flex-direction: column;
-            box-shadow: 0 10px 60px rgba(0,0,0,0.4);
+            box-shadow: 0 10px 60px var(--sw-shadow-dark);
         `;
 
         window.innerHTML = `
@@ -2092,14 +2149,14 @@ const app = {
                 }
                 .analysis-tabs {
                     display: flex;
-                    background: #d4b89b;
+                    background: var(--sw-menu-start);
                     padding: 10px 15px 0 15px;
                     gap: 5px;
                 }
                 .analysis-tab {
                     padding: 12px 24px;
-                    background: #b3967d;
-                    color: white;
+                    background: var(--sw-border-warm);
+                    color: var(--sw-text-inverse);
                     border: none;
                     border-radius: 12px 12px 0 0;
                     cursor: pointer;
@@ -2108,16 +2165,16 @@ const app = {
                     transition: all 0.2s;
                 }
                 .analysis-tab:hover {
-                    background: #9d8366;
+                    background: var(--sw-border-muted);
                 }
                 .analysis-tab.active {
-                    background: white;
-                    color: #7c5b53;
+                    background: var(--sw-surface);
+                    color: var(--sw-primary);
                 }
                 .analysis-tab-content {
                     display: none;
                     padding: 20px;
-                    background: white;
+                    background: var(--sw-surface);
                     overflow-y: auto;
                     flex: 1;
                 }
@@ -2131,15 +2188,15 @@ const app = {
                     margin-bottom: 20px;
                 }
                 .stat-card {
-                    background: linear-gradient(135deg, #7c5b53 0%, #a0795f 100%);
-                    color: white;
+                    background: linear-gradient(135deg, var(--sw-primary) 0%, var(--sw-primary-accent) 100%);
+                    color: var(--sw-text-inverse);
                     padding: 15px;
                     border-radius: 12px;
                     text-align: center;
                 }
                 .stat-label {
                     font-size: 11px;
-                    color: #e7d0a9;
+                    color: var(--sw-bg);
                     margin-bottom: 5px;
                 }
                 .stat-value {
@@ -2148,7 +2205,7 @@ const app = {
                 }
                 .stat-unit {
                     font-size: 13px;
-                    color: #e7d0a9;
+                    color: var(--sw-bg);
                 }
                 .char-table {
                     width: 100%;
@@ -2157,34 +2214,34 @@ const app = {
                     font-size: 12px;
                 }
                 .char-table th {
-                    background: #7c5b53;
-                    color: white;
+                    background: var(--sw-primary);
+                    color: var(--sw-text-inverse);
                     padding: 10px;
                     text-align: left;
                     font-weight: bold;
                 }
                 .char-table td {
                     padding: 8px 10px;
-                    border-bottom: 1px solid #e0e0e0;
+                    border-bottom: 1px solid var(--sw-border-light);
                 }
                 .char-table tr:nth-child(even) {
-                    background: #f9f9f9;
+                    background: var(--sw-surface-muted);
                 }
                 .char-table tr:hover {
-                    background: #e7d0a9;
+                    background: var(--sw-bg);
                 }
                 .analysis-section-title {
                     font-size: 16px;
                     font-weight: bold;
-                    color: #7c5b53;
+                    color: var(--sw-primary);
                     margin: 20px 0 10px 0;
                     padding-bottom: 8px;
-                    border-bottom: 2px solid #e7d0a9;
+                    border-bottom: 2px solid var(--sw-bg);
                 }
                 .analysis-export-btn {
                     padding: 10px 20px;
-                    background: #7c5b53;
-                    color: white;
+                    background: var(--sw-primary);
+                    color: var(--sw-text-inverse);
                     border: none;
                     border-radius: 10px;
                     cursor: pointer;
@@ -2193,10 +2250,10 @@ const app = {
                     margin-right: 8px;
                 }
                 .analysis-export-btn:hover {
-                    background: #6a4d45;
+                    background: var(--sw-primary-deep);
                 }
                 .voice-request-preview {
-                    background: #f9f9f9;
+                    background: var(--sw-surface-muted);
                     padding: 15px;
                     border-radius: 10px;
                     font-family: 'MS Gothic', monospace;
@@ -2206,7 +2263,7 @@ const app = {
                     overflow-y: auto;
                 }
                 .sound-effect-list {
-                    background: #f9f9f9;
+                    background: var(--sw-surface-muted);
                     padding: 15px;
                     border-radius: 10px;
                     font-family: 'MS Gothic', monospace;
@@ -2225,11 +2282,11 @@ const app = {
                 .analysis-input-label {
                     font-size: 13px;
                     font-weight: bold;
-                    color: #7c5b53;
+                    color: var(--sw-primary);
                 }
                 .analysis-input {
                     padding: 8px;
-                    border: 1px solid #c4a88b;
+                    border: 1px solid var(--sw-menu-end);
                     border-radius: 8px;
                     font-size: 13px;
                 }
@@ -2241,9 +2298,9 @@ const app = {
             </style>
 
             <!-- ヘッダー -->
-            <div style="background: linear-gradient(to right, #7c5b53, #a0795f); color: white; padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
+            <div style="background: linear-gradient(to right, var(--sw-primary), var(--sw-primary-accent)); color: var(--sw-text-inverse); padding: 18px 25px; display: flex; justify-content: space-between; align-items: center; border-radius: 20px 20px 0 0;">
                 <div style="font-size: 20px; font-weight: bold;">📊 シナリオ分析ツール</div>
-                <button onclick="this.closest('.analysis-modal').remove()" style="background: none; border: none; color: white; font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
+                <button onclick="this.closest('.analysis-modal').remove()" style="background: none; border: none; color: var(--sw-text-inverse); font-size: 28px; cursor: pointer; padding: 0 8px; line-height: 1;">×</button>
             </div>
 
             <!-- タブナビゲーション -->
@@ -2325,7 +2382,7 @@ const app = {
             </div>
 
             <!-- フッター -->
-            <div style="background: #d4b89b; padding: 15px 25px; display: flex; justify-content: flex-end; gap: 10px; border-radius: 0 0 20px 20px;">
+            <div style="background: var(--sw-menu-start); padding: 15px 25px; display: flex; justify-content: flex-end; gap: 10px; border-radius: 0 0 20px 20px;">
                 <button class="analysis-export-btn" onclick="this.closest('.analysis-modal').remove()">閉じる</button>
             </div>
         `;
@@ -2395,8 +2452,9 @@ const app = {
                 const trimmed = line.trim();
                 const lineWithoutNumber = trimmed.replace(/^\d{3}\s+/, '').trim();
 
-                // ☆効果音、☆BGM、☆環境音はスキップ
-                if (lineWithoutNumber.startsWith('☆効果音') ||
+                // ト書き、現在地、☆効果音、☆BGM、☆環境音はスキップ
+                if (this.isExcludedFromCharCount(lineWithoutNumber) ||
+                    lineWithoutNumber.startsWith('☆効果音') ||
                     lineWithoutNumber.startsWith('☆BGM') ||
                     lineWithoutNumber.startsWith('☆環境音')) {
                     return;
@@ -2405,7 +2463,7 @@ const app = {
                 if (pendingCharName) {
                     if (lineWithoutNumber) {
                         if (!charDict[pendingCharName]) charDict[pendingCharName] = 0;
-                        charDict[pendingCharName] += lineWithoutNumber.length;
+                        charDict[pendingCharName] += this.normalizeDialogueBodyForCharCount(lineWithoutNumber).length;
                     }
                     pendingCharName = null;
                     return;
@@ -2429,7 +2487,7 @@ const app = {
 
                 if (charName && dialogue) {
                     if (!charDict[charName]) charDict[charName] = 0;
-                    charDict[charName] += dialogue.length;
+                    charDict[charName] += this.normalizeDialogueBodyForCharCount(dialogue).length;
                 }
             });
         });
@@ -2493,7 +2551,8 @@ const app = {
                 const trimmed = line.trim();
                 const lineWithoutNumber = trimmed.replace(/^\d{3}\s+/, '').trim();
 
-                if (lineWithoutNumber.startsWith('☆効果音') ||
+                if (this.isExcludedFromCharCount(lineWithoutNumber) ||
+                    lineWithoutNumber.startsWith('☆効果音') ||
                     lineWithoutNumber.startsWith('☆BGM') ||
                     lineWithoutNumber.startsWith('☆環境音')) {
                     return;
@@ -2507,7 +2566,7 @@ const app = {
                             charDict[pendingCharName] = 0;
                             lineNumbers[pendingCharName] = [];
                         }
-                        charDict[pendingCharName] += lineWithoutNumber.length;
+                        charDict[pendingCharName] += this.normalizeDialogueBodyForCharCount(lineWithoutNumber).length;
                         lineNumbers[pendingCharName].push(String(lineNumber).padStart(3, '0'));
                     }
                     pendingCharName = null;
@@ -2534,7 +2593,7 @@ const app = {
                             charDict[charName] = 0;
                             lineNumbers[charName] = [];
                         }
-                        charDict[charName] += dialogue.length;
+                        charDict[charName] += this.normalizeDialogueBodyForCharCount(dialogue).length;
                         lineNumbers[charName].push(String(lineNumber).padStart(3, '0'));
                     }
 
