@@ -728,7 +728,7 @@ const app = {
         panel.appendChild(spacer2);
         
         // ト書き関係〜【暗転】ボタンを追加
-        const cutLabels = [ '// ', '〇 ', '// SE -  ', '// 環境音 - ','// BGM - ','// 挿入歌 - ', '【暗転】','【FI】','【FO】', '(10秒程  ループ使用意識で)'];
+        const cutLabels = [ '// ', '〇 ', '// SE -  ', '// 環境音 - ','// BGM - ','// 挿入歌 - ', '【暗転】','【FI】','【FO】', '(10秒程  ループ使用意識で)', '(演技指示： )'];
         cutLabels.forEach(label => {
             const btn = document.createElement('button');
             btn.className = 'char-button';
